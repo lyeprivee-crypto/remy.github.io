@@ -262,28 +262,33 @@ function bdg(code){
 }
 
 /* Formate un passage : minutes restantes + heure
-   L'API renvoie l'heure locale encodée en UTC (pas de vrai décalage TZ),
-   donc on extrait HH:MM directement depuis la string et on compare
-   avec l'heure locale actuelle. */
-function fmtPassage(isoStr){
-  // Extraire HH:MM:SS depuis "2025-...T11:16:00Z" → traiter comme heure locale
-  const m = isoStr.match(/T(\d{2}):(\d{2})/);
-  let depTotalMin;
-  if(m){
-    depTotalMin = parseInt(m[1],10)*60 + parseInt(m[2],10);
-  } else {
-    // fallback
-    const dep = new Date(isoStr);
-    depTotalMin = dep.getUTCHours()*60 + dep.getUTCMinutes();
+   cle_tri contient l'heure locale avec vrai offset ex: "...T11:30:20.000+02:00"
+   → source fiable pour calculer les minutes restantes. */
+function fmtPassage(isoStr, cleTri){
+  let hhmm='??:??', diffMin=999;
+  // Priorité : extraire datetime avec offset depuis cle_tri
+  const ctMatch = cleTri && cleTri.match(/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[^\/]*)$/);
+  if(ctMatch){
+    try{
+      const dep = new Date(ctMatch[1]);
+      if(!isNaN(dep)){
+        diffMin = Math.round((dep - new Date()) / 60000);
+        hhmm = dep.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'});
+      }
+    }catch(e){}
   }
-  const now = new Date();
-  const nowTotalMin = now.getHours()*60 + now.getMinutes();
-  // Gérer minuit (passage après 00:00)
-  let diffMin = depTotalMin - nowTotalMin;
-  if(diffMin < -60) diffMin += 1440; // lendemain
+  // Fallback : HH:MM brut depuis isoStr vs heure locale
+  if(hhmm==='??:??'){
+    const m = isoStr.match(/T(\d{2}):(\d{2})/);
+    if(m){
+      const depMin = parseInt(m[1],10)*60 + parseInt(m[2],10);
+      const now = new Date();
+      diffMin = depMin - (now.getHours()*60 + now.getMinutes());
+      if(diffMin < -60) diffMin += 1440;
+      hhmm = `${m[1]}:${m[2]}`;
+    }
+  }
   diffMin = Math.round(diffMin);
-
-  const hhmm = m ? `${m[1]}:${m[2]}` : '??:??';
   let minLabel, minClass;
   if(diffMin <= 0){ minLabel='<1 min'; minClass='now'; }
   else if(diffMin < 2){ minLabel=diffMin+' min'; minClass='now'; }
@@ -294,9 +299,16 @@ function fmtPassage(isoStr){
 
 function getPas(codes){
   if(!Array.isArray(codes))codes=[codes];
+  // Préfixes alphabétiques (ex: "ALS" depuis "ALS099") pour grouper les quais du même lieu
+  const prefixes = [...new Set(codes.map(c=>c.replace(/\d+$/,'')).filter(Boolean))];
   return prochains.filter(f=>{
-    const id=f.properties.identifiant_station||'';
-    return codes.some(c=>id.includes(':'+c+':')||id.endsWith(':'+c));
+    const id = f.properties.identifiant_station||'';
+    // Extraire le code arrêt depuis "ILEVIA:StopPoint:BP:ALS199:LOC"
+    const mId = id.match(/:([A-Z]+\d+):/);
+    if(!mId) return false;
+    const stopCode = mId[1];
+    const stopPrefix = stopCode.replace(/\d+$/,'');
+    return codes.some(c=>c===stopCode) || prefixes.some(px=>px===stopPrefix);
   });
 }
 
@@ -362,7 +374,7 @@ function renderCard(arret, dist) {
       // Lignes de direction
       const dirsHtml = dirs.map((grp, di) => {
         grp.items.sort((a,b) => a.heure_estimee_depart.localeCompare(b.heure_estimee_depart));
-        const heures = grp.items.map(i => fmtPassage(i.heure_estimee_depart)).join('');
+        const heures = grp.items.map(i => fmtPassage(i.heure_estimee_depart, i.cle_tri)).join('');
 
         const isFirstDir = di === 0;
         return `
