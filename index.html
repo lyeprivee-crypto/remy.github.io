@@ -261,14 +261,29 @@ function bdg(code){
   return`<span class="badge" style="background:${c.bg};color:${c.txt}">${label}</span>`;
 }
 
-/* Formate un passage : minutes restantes + heure */
+/* Formate un passage : minutes restantes + heure
+   L'API renvoie l'heure locale encodée en UTC (pas de vrai décalage TZ),
+   donc on extrait HH:MM directement depuis la string et on compare
+   avec l'heure locale actuelle. */
 function fmtPassage(isoStr){
-  // Les données sont en UTC, on parse tel quel
-  const dep = new Date(isoStr);
+  // Extraire HH:MM:SS depuis "2025-...T11:16:00Z" → traiter comme heure locale
+  const m = isoStr.match(/T(\d{2}):(\d{2})/);
+  let depTotalMin;
+  if(m){
+    depTotalMin = parseInt(m[1],10)*60 + parseInt(m[2],10);
+  } else {
+    // fallback
+    const dep = new Date(isoStr);
+    depTotalMin = dep.getUTCHours()*60 + dep.getUTCMinutes();
+  }
   const now = new Date();
-  const diffMs = dep - now;
-  const diffMin = Math.round(diffMs / 60000);
-  const hhmm = dep.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit',timeZone:'UTC'});
+  const nowTotalMin = now.getHours()*60 + now.getMinutes();
+  // Gérer minuit (passage après 00:00)
+  let diffMin = depTotalMin - nowTotalMin;
+  if(diffMin < -60) diffMin += 1440; // lendemain
+  diffMin = Math.round(diffMin);
+
+  const hhmm = m ? `${m[1]}:${m[2]}` : '??:??';
   let minLabel, minClass;
   if(diffMin <= 0){ minLabel='<1 min'; minClass='now'; }
   else if(diffMin < 2){ minLabel=diffMin+' min'; minClass='now'; }
