@@ -19,7 +19,11 @@
 
     .card { background: white; border-radius: 12px; border: 1px solid #eaecf0; margin-bottom: 8px; overflow: hidden; }
     .badge { display: inline-flex; align-items: center; padding: 2px 7px; border-radius: 5px; font-family: 'JetBrains Mono', monospace; font-weight: 500; font-size: 11.5px; letter-spacing: .03em; flex-shrink: 0; }
-    .heure { font-family: 'JetBrains Mono', monospace; font-size: 12.5px; font-weight: 500; background: #f3f4f6; color: #374151; padding: 2px 7px; border-radius: 5px; }
+    .heure { font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 600; background: #f3f4f6; color: #374151; padding: 3px 7px; border-radius: 5px; display: inline-flex; flex-direction: column; align-items: center; line-height: 1.2; }
+    .heure .min-val { font-size: 13px; font-weight: 700; color: #111; }
+    .heure .min-val.now { color: #059669; }
+    .heure .min-val.soon { color: #d97706; }
+    .heure .hh-mm { font-size: 10px; font-weight: 500; color: #9ca3af; }
     .perturb-toggle { font-size: 11.5px; font-weight: 500; color: #b45309; background: #fffbeb; border: 1px solid #fde68a; padding: 2px 8px; border-radius: 6px; cursor: pointer; white-space: nowrap; flex-shrink: 0; transition: background .12s; }
     .perturb-toggle:hover { background: #fef3c7; }
     .perturb-panel { display: none; background: #fffdf7; border-top: 1px solid #fde68a; padding: 10px 14px; font-size: 12px; color: #78350f; line-height: 1.55; }
@@ -248,7 +252,30 @@ async function loadVelo(){
 
 function setS(id,html){const el=document.getElementById(id);if(el)el.innerHTML=html;}
 function show(name,btn){['recherche','proximite','velo','chrono','perturbations'].forEach(s=>document.getElementById('s-'+s).style.display=s===name?'':'none');document.querySelectorAll('.tab').forEach(b=>b.classList.remove('on'));btn.classList.add('on');}
-function bdg(code){let c=couleurs[code]||{bg:'#6b7280',txt:'#fff'};if(/^P\d/i.test(code))c={bg:'#4c1d95',txt:'#ede9fe'};return`<span class="badge" style="background:${c.bg};color:${c.txt}">${code}</span>`;}
+function displayCode(code){ return code==='71'?'TRAM':code; }
+function bdg(code){
+  const label=displayCode(code);
+  let c=couleurs[code]||{bg:'#6b7280',txt:'#fff'};
+  if(/^P\d/i.test(code))c={bg:'#4c1d95',txt:'#ede9fe'};
+  if(code==='71')c={bg:'#0891b2',txt:'#fff'};
+  return`<span class="badge" style="background:${c.bg};color:${c.txt}">${label}</span>`;
+}
+
+/* Formate un passage : minutes restantes + heure */
+function fmtPassage(isoStr){
+  // Les données sont en UTC, on parse tel quel
+  const dep = new Date(isoStr);
+  const now = new Date();
+  const diffMs = dep - now;
+  const diffMin = Math.round(diffMs / 60000);
+  const hhmm = dep.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit',timeZone:'UTC'});
+  let minLabel, minClass;
+  if(diffMin <= 0){ minLabel='<1 min'; minClass='now'; }
+  else if(diffMin < 2){ minLabel=diffMin+' min'; minClass='now'; }
+  else if(diffMin <= 5){ minLabel=diffMin+' min'; minClass='soon'; }
+  else { minLabel=diffMin+' min'; minClass=''; }
+  return `<span class="heure"><span class="min-val ${minClass}">${minLabel}</span><span class="hh-mm">${hhmm}</span></span>`;
+}
 
 function getPas(codes){
   if(!Array.isArray(codes))codes=[codes];
@@ -320,10 +347,7 @@ function renderCard(arret, dist) {
       // Lignes de direction
       const dirsHtml = dirs.map((grp, di) => {
         grp.items.sort((a,b) => a.heure_estimee_depart.localeCompare(b.heure_estimee_depart));
-        const heures = grp.items.map(i => {
-          const h = new Date(i.heure_estimee_depart).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit',timeZone:'UTC'});
-          return `<span class="heure">${h}</span>`;
-        }).join('');
+        const heures = grp.items.map(i => fmtPassage(i.heure_estimee_depart)).join('');
 
         const isFirstDir = di === 0;
         return `
@@ -415,7 +439,16 @@ function renderPerturb(){
   const byLigne={};
   perturbations.forEach(f=>{const p=f.properties,cible=(p.cible||'').replace('ILEVIA:LineRef::','').replace(':LOC','');if(!byLigne[cible])byLigne[cible]=[];byLigne[cible].push(p);});
   Object.keys(byLigne).forEach(k=>{const seen=new Set();byLigne[k]=byLigne[k].filter(p=>{const key=p.message.replace(/<[^>]+>/g,' ').trim().substring(0,80);if(seen.has(key))return false;seen.add(key);return true;});});
-  const ls=Object.keys(byLigne).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
+  const ls=Object.keys(byLigne).sort((a,b)=>{
+    function rank(c){
+      if(c==='ME1'||c==='ME2')return 0;
+      if(c==='71')return 1;
+      return 2;
+    }
+    const ra=rank(a),rb=rank(b);
+    if(ra!==rb)return ra-rb;
+    return a.localeCompare(b,undefined,{numeric:true});
+  });
   st.textContent=`${ls.length} ligne${ls.length>1?'s':''} perturbée${ls.length>1?'s':''}`;
   div.innerHTML=ls.map((cible,i)=>{
     const items=byLigne[cible],isAlert=items.some(p=>p.type_perturbation==='Perturbation'),uid2='pd'+i;
