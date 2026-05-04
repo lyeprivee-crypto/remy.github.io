@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <title>Affluence Métro Lille</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-white p-6 max-w-xl mx-auto font-mono text-sm">
+
+  <h1 class="text-lg font-bold mb-1">🚇 Affluence Métro ilévia</h1>
+  <p id="nowLabel" class="text-xs text-gray-400 mb-4"></p>
+
+  <div class="flex gap-3 items-end mb-4">
+    <div class="relative flex-1">
+      <label class="block text-xs text-gray-500 mb-1">Station</label>
+      <input id="stationInput" type="text" placeholder="ex: République Beaux-Arts" class="border px-2 py-1 w-full" oninput="filterStations()">
+      <div id="suggestions" class="border bg-white absolute z-10 w-full max-h-48 overflow-y-auto hidden shadow"></div>
+    </div>
+    <button onclick="search()" class="bg-black text-white px-4 py-1 hover:bg-gray-700 shrink-0">Voir</button>
+  </div>
+
+  <div id="status" class="text-gray-400 text-xs mb-3"></div>
+  <div id="results"></div>
+
+  <svg style="display:none">
+    <symbol id="person" viewBox="0 0 10 20">
+      <circle cx="5" cy="4" r="3"/>
+      <path d="M1 20 Q1 12 5 12 Q9 12 9 20Z"/>
+    </symbol>
+  </svg>
+
+  <script>
+    const BASE = "https://data.lillemetropole.fr/geoserver/ogc/features/v1/collections/dsp_ilevia%3Aentree_sortie_metro/items";
+    const JOURS = ["Dimanche","Lundi","Mardi","Mercredi","Jeudi","Vendredi","Samedi"];
+    let allStations = [];
+
+    // Heure et jour actuels (Paris)
+    const nowParis = new Date(new Date().toLocaleString("en-US", {timeZone: "Europe/Paris"}));
+    const currentHour = nowParis.getHours();
+    const currentDay = JOURS[nowParis.getDay()];
+    const currentDateStr = nowParis.toLocaleDateString("fr-FR", {weekday:"long", day:"numeric", month:"long"});
+
+    document.getElementById('nowLabel').textContent = `Maintenant : ${currentDateStr}, ${currentHour}h–${currentHour+1}h`;
+
+    async function loadStations() {
+      try {
+        const r = await fetch(`${BASE}?f=application%2Fgeo%2Bjson&limit=500`);
+        const d = await r.json();
+        allStations = [...new Set(d.features.map(f => f.properties.libelle_station))].sort();
+      } catch(e) {}
+    }
+
+    function filterStations() {
+      const val = document.getElementById('stationInput').value.toLowerCase();
+      const box = document.getElementById('suggestions');
+      if (val.length < 2) { box.classList.add('hidden'); return; }
+      const matches = allStations.filter(s => s.toLowerCase().includes(val)).slice(0, 12);
+      if (!matches.length) { box.classList.add('hidden'); return; }
+      box.innerHTML = matches.map(s =>
+        `<div class="px-2 py-1 hover:bg-gray-100 cursor-pointer" onclick="selectStation(${JSON.stringify(s)})">${s}</div>`
+      ).join('');
+      box.classList.remove('hidden');
+    }
+
+    function selectStation(name) {
+      document.getElementById('stationInput').value = name;
+      document.getElementById('suggestions').classList.add('hidden');
+    }
+
+    function setStatus(t) { document.getElementById('status').textContent = t; }
+
+    async function search() {
+      const station = document.getElementById('stationInput').value.trim();
+      if (!station) { alert("Entrez une station."); return; }
+
+      setStatus("Chargement…");
+      document.getElementById('results').innerHTML = "";
+
+      // 1 requête filtrée par station côté serveur
+      const cql = `libelle_station='${station.replace(/'/g, "''")}'`;
+      const url = `${BASE}?f=application%2Fgeo%2Bjson&limit=10000&filter=${encodeURIComponent(cql)}&filter-lang=cql-text`;
+
+      let features = [];
+      try {
+        const r = await fetch(url);
+        const d = await r.json();
+        features = d.features || [];
+      } catch(e) { setStatus("Erreur réseau."); return; }
+
+      if (!features.length) { setStatus("Station introuvable."); return; }
+
+      // --- Calcul prédiction maintenant ---
+      // Tous les enregistrements du même jour de semaine + même heure
+      const sameDayHour = features.filter(f => {
+        const p = f.properties;
+        const h = new Date(p.heure_debut).getUTCHours();
+        return p.nom_jour === currentDay && h === currentHour;
+      });
+
+      // Moyenne des totaux sur tous ces jours historiques
+      let prediction = null;
+      let predPercent = 0;
+      let nbSamples = 0;
+
+      if (sameDayHour.length) {
+        const totals = sameDayHour.map(f => f.properties.nombre_entree_heure + f.properties.nombre_sortie_heure);
+        const avg = totals.reduce((a,b) => a+b, 0) / totals.length;
+        const allTotals = features.map(f => f.properties.nombre_entree_heure + f.properties.nombre_sortie_heure);
+        const maxEver = Math.max(...allTotals, 1);
+        prediction = Math.round(avg);
+        predPercent = Math.min(100, Math.round((avg / maxEver) * 100));
+        nbSamples = sameDayHour.length;
+      }
+
+      // --- Calcul par heure (moyenne sur tous les jours similaires) ---
+      // Grouper par heure → moyenne des totaux pour ce jour de semaine
+      const byHour = {};
+      for (const f of features) {
+        const p = f.properties;
+        if (p.nom_jour !== currentDay) continue;
+        const h = new Date(p.heure_debut).getUTCHours();
+        (byHour[h] = byHour[h] || []).push(p.nombre_entree_heure + p.nombre_sortie_heure);
+      }
+      const hourAvgs = {};
+      for (const h in byHour) {
+        const vals = byHour[h];
+        hourAvgs[h] = vals.reduce((a,b) => a+b, 0) / vals.length;
+      }
+      const maxAvg = Math.max(...Object.values(hourAvgs), 1);
+
+      // --- Affichage ---
+      const container = document.getElementById('results');
+
+      // Bloc prédiction maintenant
+      const predDiv = document.createElement('div');
+      predDiv.className = "border p-4 mb-6";
+      if (prediction !== null) {
+        const color = predPercent <= 20 ? '#4ade80' : predPercent <= 55 ? '#fb923c' : '#ef4444';
+        const label = predPercent <= 20 ? 'Peu fréquenté' : predPercent <= 55 ? 'Affluence modérée' : 'Très fréquenté';
+        predDiv.innerHTML = `
+          <div class="font-bold mb-2">Maintenant — ${currentDay} ${currentHour}h</div>
+          <div class="flex items-center gap-3 mb-2">
+            ${personBar(predPercent, 100, 8)}
+            <span class="font-bold" style="color:${color}">${predPercent}%</span>
+            <span class="text-gray-500">${label}</span>
+          </div>
+          <div class="text-xs text-gray-400">Moyenne : ~${prediction} passages/h · basé sur ${nbSamples} ${currentDay.toLowerCase()}s historiques</div>
+        `;
+      } else {
+        predDiv.innerHTML = `<div class="text-gray-400">Pas de données pour un ${currentDay} à ${currentHour}h.</div>`;
+      }
+      container.appendChild(predDiv);
+
+      // Courbe journée — toutes les heures du jour actuel
+      const dayDiv = document.createElement('div');
+      dayDiv.className = "border-t pt-3";
+      dayDiv.innerHTML = `<div class="font-bold mb-2 text-xs text-gray-500">Profil moyen — ${currentDay}s</div>`;
+      for (let h = 0; h < 24; h++) {
+        if (!(h in hourAvgs)) continue;
+        const avg = hourAvgs[h];
+        const pct = Math.round((avg / maxAvg) * 100);
+        const isNow = h === currentHour;
+        const row = document.createElement('div');
+        row.className = `flex items-center gap-3 py-0.5 ${isNow ? 'bg-yellow-50' : ''}`;
+        row.innerHTML = `
+          <span class="w-12 text-gray-400 ${isNow ? 'font-bold text-black' : ''}">${String(h).padStart(2,'0')}h</span>
+          ${personBar(pct, 100, 5)}
+          <span class="text-xs text-gray-400">${pct}%</span>
+          ${isNow ? '<span class="text-xs font-bold">← maintenant</span>' : ''}
+        `;
+        dayDiv.appendChild(row);
+      }
+      container.appendChild(dayDiv);
+
+      setStatus(`${features.length} entrées · ${nbSamples} ${currentDay.toLowerCase()}s dans l'historique`);
+    }
+
+    function personBar(pct, max, nb) {
+      const filled = Math.round((pct / max) * nb);
+      const color = pct <= 20 ? '#4ade80' : pct <= 55 ? '#fb923c' : '#ef4444';
+      let html = '<span style="display:inline-flex;gap:2px;align-items:center">';
+      for (let i = 0; i < nb; i++) {
+        const c = i < filled ? color : '#d1d5db';
+        html += `<svg width="11" height="21" viewBox="0 0 10 20"><use href="#person" fill="${c}"/></svg>`;
+      }
+      html += '</span>';
+      return html;
+    }
+
+    loadStations();
+    document.addEventListener('click', e => {
+      if (!e.target.closest('#stationInput') && !e.target.closest('#suggestions'))
+        document.getElementById('suggestions').classList.add('hidden');
+    });
+  </script>
+</body>
+</html>
